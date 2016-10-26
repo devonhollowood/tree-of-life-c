@@ -7,10 +7,15 @@
 /* Set, implemented as B tree. See https://en.wikipedia.org/wiki/B-tree
  */
 
+/* Ownership: upon free, a `set_node` is liable for freeing its children and
+ * its data
+ */
+// TODO: make const correct
 typedef struct set_node {
     set *home_set; // pointer to the set that this is a part of
     uintptr_t data; // pointer to data
     struct set_node *parent;
+    struct set_node *right_sibling;
     struct set_node **children; //NULL if leaf
     uint8_t n_keys; // number of keys stored in the node. Max = tree order - 1.
                     // Number of children = number of keys + 1
@@ -30,12 +35,13 @@ struct set {
  *   - children, if not NULL, remains unititialized.
  */
 void set_node_init(set_node *node, set *home_set, set_node* parent,
-        size_t n_keys, bool is_leaf) {
+                   set_node* right_sibling, size_t n_keys, bool is_leaf) {
     uint8_t order = home_set->order;
     node->home_set = home_set;
     node->data = (uintptr_t)calloc(order - 1, home_set->elem_size);
     node->children = is_leaf ? NULL : calloc(order, home_set -> elem_size);
     node->parent = parent;
+    node->right_sibling = right_sibling;
     node->n_keys = n_keys;
 }
 
@@ -59,35 +65,34 @@ void set_free(set *s) {
     set_tree_free(s->root);
 }
 
-bool set_tree_contains(set_node *node, void *elem, size_t elem_size,
-        void *copy_out, set_less_t less) {
-    size_t elem_index; // point where elem would go in data
-    void *stored; // pointer to stored data at elem_index
-    for(size_t elem_index = 0; elem_index < node->n_keys; ++elem_index) {
-        if (less(stored, elem)) {
-            stored = (void *)(node->data + elem_index * elem_size);
-            break;
-        }
+bool set_tree_contains(set_node *node, void *elem, void *copy_out) {
+    // convenience definitions
+    size_t elem_size = node->home_set->elem_size;
+    set_less_t less = node->home_set->less;
+    // defs for searching
+    size_t elem_index = 0; // point where `elem` would go in data
+    void *stored = (void *)node->data; // pointer to stored data at `elem_index`
+    // move `elem_index` until at end or `stored` >= `elem`
+    while (elem_index < node->n_keys && less(stored, elem)) {
+        stored = (void *)(node->data + elem_index * elem_size);
+        ++elem_index;
     }
-    if (less(elem, stored)) { // stored == elem; we've found it
+    if (!less(elem, stored)) { // stored == elem; we've found it
         if(copy_out) {
             memcpy(copy_out, stored, elem_size);
         }
         return true;
     }
-    if (node->children) { // elem in children[elem_index]
-        return set_tree_contains(node->children[elem_index], elem, elem_size,
-                copy_out, less);
-    }
-    else { // we are leaf, elem not found
+    if (!node->children) { // we are leaf, elem not found
         return false;
     }
+    // recursive case; elem in children[elem_index]
+    return set_tree_contains(node->children[elem_index], elem, copy_out);
 }
 
 bool set_contains(set *s, void *elem, void *copy_out) {
     if (s->root) {
-        return set_tree_contains(s->root, elem, s->elem_size, copy_out,
-                s->less);
+        return set_tree_contains(s->root, elem, copy_out);
     }
     else { // empty set
         return false;
